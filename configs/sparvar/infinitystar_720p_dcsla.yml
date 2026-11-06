@@ -1,0 +1,52 @@
+# Migration candidate derived from the source defaults; independent GPU/paper validation is pending.
+mlp:
+  is_enabled: false
+patchify:
+  is_enabled: false
+attn:
+  is_enabled: true
+  model_family: video
+  decision_scale: 27
+  decision_repeat_idx: null
+  speedup: 1
+  colsum_fa2: false
+  colsum_fa3: false
+  dense_attn_fa3: false
+  top_keys: 0.2
+  random_keys: 0.01
+  cs4a_qgroup_map_mode: nearest
+  cs4a_qgroup_interp_align: center
+  cs4a_index_expand_mode: footprint
+  use_current_scale_topklen: false
+  cs4a_band_neighbor_frames: 0
+  cs4a_footprint_union_band: true
+  cs4a_compact_index_width: full
+  use_o_cache: false
+  update_o_cache_on_sparse_scale: none
+  dcsla_enabled: true
+  flex_backend: triton
+  dcsla_select_mode: coverage
+  dcsla_tau: 0.9
+  dcsla_topk_ratio: 0.2
+  dcsla_min_blocks: 16
+  dcsla_max_blocks_ratio: 0.5
+  dcsla_local_diag_blocks: 1
+  dcsla_temporal_neighbor_frames: 2
+  dcsla_temporal_diag_blocks: 0
+  dcsla_vcsla_frame_band_rho: -1
+  dcsla_keep_sink: false
+  dcsla_sink_select_tau: 0.9
+  dcsla_mass_normalize: true
+  dcsla_colsum_group_rows: 192
+  flex_mode: max-autotune-no-cudagraphs
+  flex_dynamic: true
+  bound_layer: 10
+  first_n_dense_layers: 2
+  should_compress_indices: false
+  provider: cuda
+offloading:
+  global_disable_offloading: false
+  attn.out_cache: true
+  attn.indices: true
+  attn.counts: true
+  text_encoders: true

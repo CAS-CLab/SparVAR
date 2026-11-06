@@ -1,0 +1,91 @@
+mlp:
+  is_enabled: false  # flip to true explicitly when running sparse-MLP experiments
+  is_fp8: false
+  top_keys: 0.3
+  random_keys: 0.05
+  full_step_every: 10
+  block_mask_cache: 2
+  first_n_dense_layers: 2 # default: 2
+  provider: triton
+patchify:
+  is_enabled: true
+  # To disable patching at any level, set that level's patch size to 1. To disable patching entirely, set all patch sizes to 1.
+  chunk_size_1: 8
+  chunk_size_2: 4
+attn:
+  is_enabled: true
+  model_family: image                           # SparseDiffAttn path: image (Infinity) | video (InfinityStar)
+  # --- CS4A ---
+  decision_scale: 10
+  speedup: 1                                    # 1: speed entry; 0: quality entry; TileLang uses the same native pair
+  top_keys: 0.2                                 # default: 0.15
+  random_keys: 0.01
+  # image KV coordinate mapping across scales:
+  #   relative : Decompose-Align-Project LUT (journal version; preserves relative scale distance)
+  #   identity : keep decision-scale coordinates (valid prefix positions; conference behavior)
+  cs4a_image_kv_map: identity
+  cs4a_qgroup_map_mode: nearest
+  cs4a_identity_cumulative: true
+  cs4a_sink_scales: 5                           # union first-N-scales tokens as sink; must be >= k - decision_scale under 'relative' (0 disables)
+  # image expansion strategy:
+  #   center_union : mapped top-k centers ∪ local window ∪ sink (uses cs4a_image_kv_map)
+  #   footprint    : inverse parent-LUT mask expansion — each selected decision cell
+  #                  lights up its WHOLE footprint block at the target scale; relative
+  #                  alignment built in (cs4a_image_kv_map ignored on this path)
+  cs4a_image_expand_mode: center_union          # [center_union, footprint]
+  cs4a_footprint_union_local: true             # footprint: also union the local window (cs4a_ws); A/B knob
+  # cs4a_ws: per-HISTORICAL-scale band widths (win_size / dcsla_image_win_size semantics).
+  # On the footprint path (cs4a_footprint_union_local: true), sparse scale K unions the
+  # win[l] x win[l] window on EVERY scale l <= K with win[l] >= 1 (< 1 disables a scale,
+  # a short list broadcasts its last entry). E.g. [.., 3, 5, 7]: scale 12 gets its own
+  # win-7 band + scale-11 win-5 + scale-10 win-3 cross-scale bands. The center_union
+  # path still reads ws[scale_ind] as its self-only window width.
+  cs4a_ws: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 3, 5, 7]
+  use_o_cache: true                             # O_t = upsample(O_cache) + ΔO_new (image conference setup)
+  update_o_cache_on_sparse_scale: none          # [none, dense_sparse_scale]
+  # --- CSLA ---
+  attn_sink: 5
+  win_size: [-1, -1, -1, -1, -1, -1, -1, -1, 1, 1, 3, 5, 7]
+  csla_scales: [10, 11, 12]         # image scales that run the static CSLA path (previously hardcoded)
+  # --- shared FlexAttention (CSLA + D-CSLA) ---
+  flex_backend: triton                 # [triton, fa4] fa4 falls back to triton at runtime on failure
+  flex_block_size: 128
+  flex_mode: max-autotune-no-cudagraphs
+  flex_dynamic: true                # image shapes are static, always false; false is worth an A/B
+  # --- D-CSLA (block-sparse FlexAttention; replaces the CS4A csp_attn chain) ---
+  # Requires use_o_cache: false. Sink = cs4a_sink_scales (first 5 scales = 121 tokens
+  # = 1 block); the image KV is text-free and fixed-length, so every scale has exactly
+  # one shape and there is no per-prompt recompile pressure.
+  dcsla_enabled: false
+  dcsla_select_mode: topk_ratio       # [coverage, topk_ratio]
+  dcsla_tau: 0.9
+  dcsla_topk_ratio: 0.2
+  dcsla_min_blocks: 4               # image V is 33/51/83 at si=10/11/12 (vs ~590 for 720p video), so the video floor of 16 would pin si=11 at 31% density
+  dcsla_max_blocks_ratio: 0.5
+  dcsla_local_diag_blocks: 0        # intra-current-scale diagonal band; the cross-scale band below is the image locality prior
+  dcsla_image_win_size: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 3, 3]           # per-historical-scale CSLA band (same shape as win_size); ~ = no band prior
+  dcsla_keep_sink: true
+  dcsla_sink_select_tau: 0.9        # keep_sink=false 时: >0 = sink 区独立 coverage 选择
+  dcsla_mass_normalize: true
+  # --- CS4A + CSLA ---
+  bound_layer: 100                              # journal default (2026-08-24 full sweep: Pareto-optimal for 2B & 8B); >= depth means only CS4A/DCSLA, < 0 means only CSLA
+  full_step_every: 10
+  full_step_schedule: ~
+  first_n_dense_layers: 2 # default: 2
+  recompute_mask: false
+  should_compress_indices: false
+  provider: cuda                                # [triton, cuda, tilelang]; FA overrides retain priority
+offloading:
+  global_disable_offloading: true
+  mlp.out_cache: false
+  mlp.indices: false
+  mlp.counts: false
+  mlp.sparse_act_T: false
+  mlp.blockmean_mid_cache: false
+  attn.out_cache: false
+  attn.indices: false
+  attn.counts: false
+  attn.lse_constants: false
+  text_encoders: false
+step_caching:
+  is_enabled: false

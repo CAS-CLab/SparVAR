@@ -1,0 +1,16 @@
+{
+  "accel_enabled": true,
+  "csla_preset": "hart_legacy",
+  "csla_query_scales": [
+    11,
+    12,
+    13
+  ],
+  "csla_layers": [],
+  "csla_sink": -1,
+  "csla_windows": [],
+  "csla_block_size": 128,
+  "csla_kv_layout": "native",
+  "csla_kernel": "flex",
+  "cs4a_layers": []
+}

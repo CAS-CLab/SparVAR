@@ -205,3 +205,36 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# SparVAR release runtime artifacts
+.DS_Store
+.idea/
+.vscode/
+.env.*
+!.env.example
+pretrained_models/
+datasets/
+work_dir/
+output/
+outputs/
+checkpoints/
+logs/
+wandb/
+*.pth
+*.pt
+*.safetensors
+*.bin
+*.onnx
+*.so
+*.dylib
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+# Private source checkouts and internal notes are not release assets.
+lvar/
+docs/private/
+TODO_*

@@ -1,0 +1,111 @@
+# Migration candidate derived from the source defaults; independent GPU/paper validation is pending.
+mlp:
+  is_enabled: false
+  is_fp8: false
+  top_keys: 0.3
+  random_keys: 0.05
+  full_step_every: 10
+  block_mask_cache: 2
+  first_n_dense_layers: 2
+  provider: triton
+patchify:
+  is_enabled: true
+  chunk_size_1: 8
+  chunk_size_2: 4
+attn:
+  is_enabled: true
+  model_family: image
+  decision_scale: 10
+  speedup: 1
+  top_keys: 0.2
+  random_keys: 0.01
+  cs4a_image_kv_map: identity
+  cs4a_qgroup_map_mode: nearest
+  cs4a_identity_cumulative: true
+  cs4a_sink_scales: 5
+  cs4a_image_expand_mode: center_union
+  cs4a_footprint_union_local: true
+  cs4a_ws:
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - 3
+  - 5
+  - 7
+  use_o_cache: true
+  update_o_cache_on_sparse_scale: none
+  attn_sink: 5
+  win_size:
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - 1
+  - 1
+  - 3
+  - 5
+  - 7
+  csla_scales:
+  - 10
+  - 11
+  - 12
+  flex_backend: triton
+  flex_block_size: 128
+  flex_mode: max-autotune-no-cudagraphs
+  flex_dynamic: true
+  dcsla_enabled: false
+  dcsla_select_mode: topk_ratio
+  dcsla_tau: 0.9
+  dcsla_topk_ratio: 0.2
+  dcsla_min_blocks: 4
+  dcsla_max_blocks_ratio: 0.5
+  dcsla_local_diag_blocks: 0
+  dcsla_image_win_size:
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - -1
+  - 3
+  - 3
+  dcsla_keep_sink: true
+  dcsla_sink_select_tau: 0.9
+  dcsla_mass_normalize: true
+  bound_layer: 100
+  full_step_every: 10
+  full_step_schedule: null
+  first_n_dense_layers: 2
+  recompute_mask: false
+  should_compress_indices: false
+  provider: cuda
+offloading:
+  global_disable_offloading: true
+  mlp.out_cache: false
+  mlp.indices: false
+  mlp.counts: false
+  mlp.sparse_act_T: false
+  mlp.blockmean_mid_cache: false
+  attn.out_cache: false
+  attn.indices: false
+  attn.counts: false
+  attn.lse_constants: false
+  text_encoders: false
+step_caching:
+  is_enabled: false

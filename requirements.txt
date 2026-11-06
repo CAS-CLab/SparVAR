@@ -1,0 +1,29 @@
+# Install a matching CUDA torch/torchvision build before the native extensions.
+# This dependency set is a migration baseline, not a freshly validated GPU lockfile.
+torch>=2.7
+torchvision>=0.22
+accelerate
+einops
+huggingface_hub
+imageio
+imageio-ffmpeg
+lightning-fabric
+matplotlib
+ninja
+numpy
+nvidia-ml-py
+opencv-python
+packaging
+pandas
+Pillow
+psutil
+pytorch-lightning
+pytz
+PyYAML
+requests
+safetensors
+scipy
+timm
+tqdm
+transformers==4.57.6
+typed-argument-parser

@@ -1,0 +1,68 @@
+mlp:
+  is_enabled: false
+patchify:
+  is_enabled: false
+attn:
+  is_enabled: true                              # TEMP(pattern-stats): dense baseline for 720p collection; restore true afterwards
+  model_family: video                           # SparseDiffAttn path: image (Infinity) | video (InfinityStar)
+  # --- CS4A ---
+  decision_scale: 25                            # sparse decision scale {480p: 25, 720p: 27}
+  decision_repeat_idx: null                     # which repeat of the decision scale runs the full colsum decision: null -> last repeat; integer k -> repeat k (its later repeats run csp_attn reusing the repeat-k indices)
+  speedup: 1                                    # 1: speed entry; 0: quality entry; TileLang uses the same native pair
+  colsum_fa2: false                              # true: FA2 dense + QK-only Triton colsum; false: provider-native decision path. CUDA provider takes precedence over FA2
+  colsum_fa3: false                              # Hopper only: FA3 + Triton colsum_only takes precedence over provider/FA2 for decision attention; other operators keep their provider routing
+  dense_attn_fa3: false                          # Hopper only: FA3 takes precedence over provider for all pre-sparse Qwen dense scales. Set false to use native TileLang when provider=tilelang
+  top_keys: 0.2                                 # default: {0.15, 0.2, 0.25, 0.3}
+  random_keys: 0.01                             # default: 0.01
+  # 
+  cs4a_qgroup_map_mode: nearest                  # [nearest, index_linear]
+  cs4a_qgroup_interp_align: center              # index_linear: [center, endpoint]
+  cs4a_index_expand_mode: footprint            # [none, 1d, 3d, frame_band, footprint]
+  use_current_scale_topklen: false              # Only effective for cs4a_index_expand_mode: 1d/3d
+  cs4a_band_neighbor_frames: 0                  # frame_band / footprint(+band): own frame +/- N neighbour frames
+  cs4a_footprint_union_band: true              # footprint: also union the full-frame band (uses cs4a_band_neighbor_frames)
+  cs4a_compact_index_width: full                # auto: analytic-width mask_to_indices output on footprint sparse steps (-2.7GB peak @720p scale 29); full: legacy k_len-width allocation
+  use_o_cache: false
+  update_o_cache_on_sparse_scale: none          # [none, dense_sparse_scale]
+  # --- D-CSLA (block-sparse FlexAttention path; uncomment to enable) ---
+  # Companion settings (v1 asserts the second):
+  #   should_compress_indices: false   # skip per-layer pinned 'attn.indices' buffers D-CSLA never reads
+  #   use_o_cache: false               # D-CSLA v1: O_cache paths unsupported
+  #   decision_repeat_idx: null|int    # int k: decision at repeat k of the decision scale; its later repeats run the block-sparse forward (mass dict then includes the decision scale itself)
+  dcsla_enabled: false
+  flex_backend: fa4                 # shared CSLA/D-CSLA FlexAttention backend: [triton, fa4] fa4 = torch>=2.11 FLASH (CuTe) flex backend, ~1.6x triton @ equal density; runtime-falls-back to triton on failure
+  dcsla_select_mode: coverage       # [coverage, topk_ratio]
+  dcsla_tau: 0.9
+  dcsla_topk_ratio: 0.2             # iso-budget vs cs4a top_keys when select_mode=topk_ratio
+  dcsla_min_blocks: 16
+  dcsla_max_blocks_ratio: 0.5
+  dcsla_local_diag_blocks: 1        # SPATIAL prior: +/-N blocks around the q-block's own KV position (intra-frame horizontal stripe)
+  dcsla_temporal_neighbor_frames: 2 # TEMPORAL prior: also force-keep the same spatial position in the +/-N neighbouring frames; 0 = off
+  dcsla_temporal_diag_blocks: 0     # radius (in blocks) around each temporally shifted center; 0 = the single center block per neighbour frame
+  dcsla_vcsla_frame_band_rho: -1    # V-CSLA W-A frame band: keep min(2*rho+1, T) full contiguous frames per q-block (CS4A boundary-shift semantics); -1 = off; OR'd with the dynamic selection (pure static V-CSLA under the budget-zero recipe: topk_ratio=0 + min_blocks=0 + keep_sink=true)
+  dcsla_keep_sink: false             # true: force-keep all ctx(sink) blocks; false: sink selected per dcsla_sink_select_tau
+  dcsla_sink_select_tau: 0.9        # keep_sink=false 时: >0 = sink 区独立 coverage 选择（sink 质量精确、恒等迁移）; 0 = 与 video 联合竞争
+  dcsla_mass_normalize: true        # mass-conserving transfer; required for a fair sink-vs-video ranking when keep_sink=false
+  dcsla_colsum_group_rows: 192      # decision colsum query-group rows, multiple of 64: 192 (legacy) / 128 (block-aligned) / 64 (finest, BLOCK_M tile floor); Triton colsum only, ignored when dcsla_enabled=false
+  flex_mode: max-autotune-no-cudagraphs   # shared CSLA/D-CSLA torch.compile mode
+  flex_dynamic: true                      # shared torch.compile(dynamic=...)
+  # --- CS4A + CSLA ---
+  bound_layer: 10
+  # 
+  first_n_dense_layers: 2                       # default: 2
+  should_compress_indices: false
+  provider: cuda                                # [triton, cuda, tilelang]; FA overrides retain priority
+
+offloading:
+  global_disable_offloading: false
+
+  attn.out_cache: true
+  # true : offload each layer's bitpacked decision mask to a lazily-fitted pinned-CPU
+  #        buffer (~21 MB/layer @720p, sized to the payload — not the 737 MB Hunyuan
+  #        MEDIUM preset) and reload it per sparse step; the reload overlaps the
+  #        previous layer's compute via next-layer prefetch (storage_prefetch_utils).
+  # false: keep it GPU-resident (~21 MB/layer, ~756 MB for 36 layers) — no host RAM,
+  #        no H2D copies at all.
+  attn.indices: true
+  attn.counts: true
+  text_encoders: true

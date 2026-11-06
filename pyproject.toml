@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sparvar"
+version = "0.1.0"
+description = "SparVAR and SparVAR++ visual autoregressive inference."
+readme = "README.md"
+requires-python = ">=3.12"
+# The imported source and the existing repository retain their original licenses.
+license = "Apache-2.0 AND MIT"
+license-files = ["LICENSE", "LICENSES/*.txt", "THIRD_PARTY_NOTICES.md"]
+authors = [{name = "CAS CLab"}]
+dynamic = ["dependencies"]
+
+[project.urls]
+Repository = "https://github.com/CAS-CLab/SparVAR"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+metrics = ["torchmetrics", "lpips", "decord"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+where = ["."]
+namespaces = true
+include = ["models*", "utils*", "tools*", "evaluation*", "kernels*", "losses*", "examples*", "configs*"]
+exclude = ["kernels.chipmunk*", "kernels.tests*", "models.hart.kernels*", "tests*"]
+
+[tool.setuptools.package-data]
+"models.sparvar" = ["*.yml"]
+"configs.sparvar" = ["*.yml", "*.json"]
+"evaluation.gen_eval" = ["*.txt", "*.json", "prompts/*.jsonl"]
+"evaluation.dpg_bench" = ["*.csv", "*.txt"]
+"evaluation.image_reward" = ["*.json"]
+"evaluation.vbench" = ["*.json"]

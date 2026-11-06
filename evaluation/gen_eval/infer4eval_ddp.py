@@ -1,0 +1,225 @@
+import argparse
+import os
+import os.path as osp
+import time
+import torch
+import cv2
+import json
+
+import torch.distributed as tdist
+from lightning_fabric import seed_everything
+from tqdm import trange
+
+from utils.infer_arg_utils import merge_script_args, parse_infer_args
+from tools.public_eval_utils import validate_public_model_type
+
+os.environ['XFORMERS_FORCE_DISABLE_TRITON'] = '1'
+
+
+if __name__ == '__main__':
+    # model-level args (model_path / cfg / ... incl. --outdir) are parsed by the
+    # Tap class matching --model_type; the parser below only holds benchmark args
+    args = parse_infer_args()
+    validate_public_model_type(args.model_type)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--n_samples', type=int, default=4)
+    parser.add_argument('--metadata_file', type=str, default='evaluation/gen_eval/prompts/evaluation_metadata.jsonl')
+    parser.add_argument('--rewrite_prompt', type=int, default=0, choices=[0,1])
+    parser.add_argument('--load_rewrite_prompt_cache', type=int, default=1, choices=[0,1])
+    parser.add_argument('--test_speed', type=bool, default=True, help="Enable latency measurement")
+    args = merge_script_args(args, parser)
+
+    # parse cfg (Tap parses cfg as a single float; keep supporting the legacy comma-separated string)
+    if isinstance(args.cfg, str):
+        args.cfg = list(map(float, args.cfg.split(',')))
+        if len(args.cfg) == 1:
+            args.cfg = args.cfg[0]
+    
+    # *Initialize distributed process group
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f'cuda:{local_rank}')
+    tdist.init_process_group(backend='nccl')
+    rank = tdist.get_rank()
+    world_size = tdist.get_world_size()
+    
+    with open(args.metadata_file) as fp:
+        metadatas = [json.loads(line) for line in fp]
+    
+    # *Distribute the data (prompts) across GPUs
+    total_samples = len(metadatas)
+    per_gpu = (total_samples + world_size - 1) // world_size
+    start_idx = rank * per_gpu
+    end_idx = min(start_idx + per_gpu, total_samples)
+    
+    prompt_rewrite_cache_file = osp.join('evaluation/gen_eval', 'prompt_rewrite_cache.json')
+    if osp.exists(prompt_rewrite_cache_file):
+        with open(prompt_rewrite_cache_file, 'r') as f:
+            prompt_rewrite_cache = json.load(f)
+            print(f"\n[Rank {rank}: Load prompt_rewrite_cache.json successful!]\n")
+    else:
+        prompt_rewrite_cache = {}
+        print(f"\n[Rank {rank}: Load prompt_rewrite_cache.json false!]\n")
+    
+    if 'infinity' in args.model_type:
+        from tools.run_infinity import (
+            gen_one_img, load_tokenizer, load_transformer, load_visual_tokenizer,
+        )
+        print(f"[Rank {rank}] Loading Infinity model...")
+        # load text encoder
+        text_tokenizer, text_encoder = load_tokenizer(t5_path=args.text_encoder_ckpt)
+        # load vae
+        vae = load_visual_tokenizer(args)
+        # load infinity
+        infinity = load_transformer(vae, args)
+    elif 'hart' in args.model_type:
+        from tools.run_hart import gen_one_img_hart, load_hart, load_hart_tokenizer
+        print(f"[Rank {rank}] Loading HART model...")
+        # load text encoder
+        text_tokenizer, text_encoder = load_hart_tokenizer(args, device)
+        # load hart
+        hart, ema_hart = load_hart(args, device)
+
+    tdist.barrier(device_ids=[local_rank])
+    # hyperparameter setting
+    cfg = args.cfg
+    if 'infinity' in args.model_type:
+        from utils.dynamic_resolution import dynamic_resolution_h_w
+        tau = args.tau
+        h_div_w_template = 1.000
+        scale_schedule = dynamic_resolution_h_w[h_div_w_template][args.pn]['scales']
+        scale_schedule = [(1, h, w) for (_, h, w) in scale_schedule]
+    # tgt_h, tgt_w = dynamic_resolution_h_w[h_div_w_template][args.pn]['pixel']
+    
+    local_total_latency = 0.0
+    local_infinity_latency = 0.0
+    local_num_images = 0
+    warmup_steps = 2
+    local_warmup_images = warmup_steps * args.n_samples
+    
+    # for index, metadata in enumerate(metadatas):
+    for index in trange(start_idx, end_idx, disable=rank!=0, desc=f"Rank {rank}"):
+        seed_everything(args.seed)
+        # seed_everything(args.seed + index) # Use a different seed for each prompt
+        metadata = metadatas[index]
+
+        outpath = os.path.join(args.outdir, f"{index:0>5}")
+        os.makedirs(outpath, exist_ok=True)
+        prompt = metadata['prompt']
+        print(f"[Rank {rank}] Prompt ({index: >3}/{len(metadatas)}): '{prompt}'")
+
+        sample_path = os.path.join(outpath, "samples")
+        os.makedirs(sample_path, exist_ok=True)
+        with open(os.path.join(outpath, "metadata.jsonl"), "w") as fp:
+            json.dump(metadata, fp)
+
+        if args.rewrite_prompt:
+            old_prompt = prompt
+            if args.load_rewrite_prompt_cache and prompt in prompt_rewrite_cache:
+                prompt = prompt_rewrite_cache[prompt]
+            # else:
+            print(f'[Rank {rank}] old_prompt: {old_prompt}, refined_prompt: {prompt}')
+            
+        images = []
+        for sample_j in range(args.n_samples):
+            print(f"[Rank {rank}] Generating {sample_j+1} of {args.n_samples}, prompt={prompt}")
+            # Important! for reproducibility, e.g. 4 samples of same prompt will same
+            seed = args.seed + (index * args.n_samples) + sample_j
+            
+            torch.cuda.reset_peak_memory_stats(device=device)
+            alloc_before_gen = torch.cuda.memory_allocated(device=device) / (1024**2)
+            t1 = time.time()
+            if 'infinity' in args.model_type:
+                if args.test_speed:
+                    image, total_cost, infinity_cost = gen_one_img(
+                        infinity, vae, text_tokenizer, text_encoder,
+                        prompt, tau_list=tau, cfg_sc=3, cfg_list=cfg,
+                        scale_schedule=scale_schedule,
+                        cfg_insertion_layer=[args.cfg_insertion_layer],
+                        vae_type=args.vae_type,
+                        g_seed=seed,
+                        test_speed=args.test_speed
+                    )
+                    local_num_images += 1
+                    if local_num_images > local_warmup_images:
+                        local_total_latency += total_cost
+                        local_infinity_latency += infinity_cost
+                else:
+                    image = gen_one_img(
+                        infinity, vae, text_tokenizer, text_encoder,
+                        prompt, tau_list=tau, cfg_sc=3, cfg_list=cfg,
+                        scale_schedule=scale_schedule,
+                        cfg_insertion_layer=[args.cfg_insertion_layer],
+                        vae_type=args.vae_type,
+                        g_seed=seed,
+                    )
+            elif 'hart' in args.model_type:
+                image, total_cost, hart_cost = gen_one_img_hart(
+                    hart, args.use_ema, ema_hart, text_tokenizer, text_encoder,
+                    prompt, cfg, args.max_token_length, args.use_llm_system_prompt,
+                    args.more_smooth,
+                    g_seed=seed,    # keep the per-sample seed protocol identical to Infinity
+                    test_speed=True,
+                    final_stage=args.final_stage,
+                    num_maskgit_iters=args.num_maskgit_iters,
+                    sample_metadata={'benchmark': 'gen_eval', 'prompt_index': index, 'sample_index': sample_j},
+                )
+                local_num_images += 1
+                if local_num_images > local_warmup_images:
+                    local_total_latency += total_cost
+                    local_infinity_latency += hart_cost
+            else:
+                raise ValueError
+            t2 = time.time()
+
+            alloc_after_gen = torch.cuda.memory_allocated(device=device) / (1024**2)
+            peak_alloc_gen = torch.cuda.max_memory_allocated(device=device) / (1024**2)
+            print(f"\n====== [Rank {rank}] Generation Time / Memory Usage of Original Model ======")
+            print(f'{args.model_type} infer one image takes {t2-t1:.2f}s (w/ decoder)')
+            print(f"GPU allocated before/after: {alloc_before_gen:.1f} MB -> {alloc_after_gen:.1f} MB (delta {alloc_after_gen - alloc_before_gen:+.1f} MB)")
+            print(f"GPU peak allocated during gen: {peak_alloc_gen:.1f} MB (delta {peak_alloc_gen - alloc_before_gen:+.1f} MB)")
+            print("=======================================================================\n")
+            images.append(image)
+
+        for i, image in enumerate(images):
+            save_file = os.path.join(sample_path, f"{i:05}.jpg")    #; print(f'{save_file=}')
+            if 'infinity' in args.model_type:
+                cv2.imwrite(save_file, image.cpu().numpy())
+            else:
+                image.save(save_file)
+    
+    tdist.barrier(device_ids=[local_rank])
+    latency_tensor = torch.tensor(
+        [local_total_latency, local_infinity_latency, local_num_images],
+        device=device,
+        dtype=torch.float64
+    )
+
+    tdist.all_reduce(latency_tensor, op=tdist.ReduceOp.SUM)
+    global_total_latency = latency_tensor[0].item()
+    global_infinity_latency = latency_tensor[1].item()
+    global_warmup_images = local_warmup_images * world_size
+    global_num_images = int(latency_tensor[2].item()) - global_warmup_images
+
+    if rank == 0:
+        avg_total_latency = global_total_latency / max(global_num_images, 1)
+        avg_infinity_latency = global_infinity_latency / max(global_num_images, 1)
+        throughput_total = global_num_images / global_total_latency
+        throughput_infinity = global_num_images / global_infinity_latency
+        print("\n========== Benchmark Profile ==========")
+        print(f"Total images: {global_num_images} + {global_warmup_images}(warmup) = {global_num_images+global_warmup_images}({total_samples*args.n_samples})")
+        print("------ w/ decoder ------")
+        print(f"Total inference time: {global_total_latency:.2f} s")
+        print(f"Average latency per image: {avg_total_latency:.4f} s")
+        print(f"Throughput: {throughput_total:.4f} images/sec")
+        print("------ w/o decoder ------")
+        print(f"Total inference time: {global_infinity_latency:.2f} s")
+        print(f"Average latency per image: {avg_infinity_latency:.4f} s")
+        print(f"Throughput: {throughput_infinity:.4f} images/sec")
+        print("=======================================\n")
+
+    if rank == 0:
+        
+        print("All processes finished generation.")
+        # with open(prompt_rewrite_cache_file, 'w') as f:
+        #     json.dump(prompt_rewrite_cache, f, indent=2)
