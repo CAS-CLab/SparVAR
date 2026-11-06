@@ -1,4 +1,4 @@
-# SparVAR / SparVAR++
+# SparVAR (CVPR'2026) and SparVAR++
 
 Training-free sparse attention for next-scale visual autoregressive generation.
 This repository contains the SparVAR image path and the SparVAR++ InfinityStar
